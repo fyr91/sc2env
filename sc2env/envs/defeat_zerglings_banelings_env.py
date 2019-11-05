@@ -2,7 +2,7 @@
 # @Author: fyr91
 # @Date:   2019-10-04 15:55:09
 # @Last Modified by:   fyr91
-# @Last Modified time: 2019-10-11 16:27:08
+# @Last Modified time: 2019-11-05 22:11:42
 import gym
 from pysc2.env import sc2_env
 from pysc2.lib import actions, features, units
@@ -11,9 +11,12 @@ import logging
 import numpy as np
 
 logger = logging.getLogger(__name__)
+NO_OP = actions.RAW_FUNCTIONS.no_op.id
+MOVE_PT = actions.RAW_FUNCTIONS.Move_pt.id
 
 class DZBEnv(gym.Env):
     metadata = {'render.modes': ['human']}
+
     default_settings = {
         'map_name': "DefeatZerglingsAndBanelings",
         'players': [sc2_env.Agent(sc2_env.Race.terran),
@@ -22,8 +25,9 @@ class DZBEnv(gym.Env):
                     action_space=actions.ActionSpace.RAW,
                     use_raw_units=True,
                     raw_resolution=64),
-        'realtime': True
+        'realtime': False
     }
+
 
     def __init__(self, **kwargs):
         super().__init__()
@@ -33,16 +37,12 @@ class DZBEnv(gym.Env):
         self.banelings = []
         self.zerglings = []
         # 000 idle
-        # 10[0-8] move 0-8 up
-        # 11[0-8] move 0-8 down
-        # 12[0-8] move 0-8 left
-        # 13[0-8] move 0-8 right
-        # 2[0-8][9-18] use 0-8 to attack 9-18
-        self.action_space = spaces.Box(
-                low=np.array([0,0,0]),
-                high=np.array([2,8,18]),
-                dtype=np.uint8
-            )
+        # 1[0~1][0-8] move 0-8 up
+        # 1[1~2][0-8] move 0-8 down
+        # 1[2~3][0-8] move 0-8 left
+        # 1[3~4][0-8] move 0-8 right
+        # 2[0-8][9-18] use 0-8 to attack 0-9
+        self.action_space = spaces.Discrete(123)
         # [0: survived, 1: x, 2: y, 3: hp]
         self.observation_space = spaces.Box(
             low=0,
@@ -56,9 +56,9 @@ class DZBEnv(gym.Env):
         self.total_reward = 0
 
 
-    def init_env(self):
-        args = {**self.default_settings, **self.kwargs}
-        self.env =  sc2_env.SC2Env(**args)
+    # def init_env(self):
+    #     args = {**self.default_settings, **self.kwargs}
+    #     self.env =  sc2_env.SC2Env(**args)
 
 
     def step(self, action):
@@ -97,70 +97,127 @@ class DZBEnv(gym.Env):
         self.zerglings = []
 
         for i, m in enumerate(marines):
-            self.marines.append(m.tag)
+            self.marines.append(m)
             obs[i] = np.array([1, m.x, m.y, m[2]])
 
         for i, b in enumerate(banelings):
-            self.banelings.append(b.tag)
+            self.banelings.append(b)
             obs[i+9] = np.array([1, b.x, b.y, b[2]])
 
         for i, z in enumerate(zerglings):
-            self.zerglings.append(z.tag)
+            self.zerglings.append(z)
             obs[i+13] = np.array([1, z.x, z.y, z[2]])
 
         return obs
 
 
     def take_action(self, action):
-        if action[2] >= 9:
-            if action[0] == 1 and action[1] == 0:
-                action_mapped = self.move_up(action[2])
-            elif action[0] == 1 and action[1] == 1:
-                action_mapped = self.move_down(action[2])
-            elif action[0] == 1 and action[1] == 2:
-                action_mapped = self.move_left(action[2])
-            elif action[0] == 1 and action[1] == 3:
-                action_mapped = self.move_right(action[2])
-            elif action[0] == 2 and action[1] < 9:
-                action_mapped = self.attact(action[1], action[2])
+        if action == 0:
+            action_mapped = actions.RAW_FUNCTIONS.no_op()
+        elif action<=32:
+            derived_action = np.floor((action-1)/8)
+            idx = (action-1)%8
+            if derived_action == 0:
+                action_mapped = self.move_up(idx)
+            elif derived_action == 1:
+                action_mapped = self.move_down(idx)
+            elif derived_action == 2:
+                action_mapped = self.move_left(idx)
+            else:
+                action_mapped = self.move_right(idx)
         else:
-            action_mapped = [actions.RAW_FUNCTIONS.no_op.id,[]]
+            eidx = np.floor((action-33)/9)
+            aidx = (action-33)%9
+            action_mapped = self.attack(aidx, eidx)
 
-        try:
-            raw_obs = self.env.step([actions.FunctionCall(action_mapped[0],action_mapped[1])])[0]
-        except:
-            raw_obs = self.env.step([actions.FunctionCall(actions.RAW_FUNCTIONS.no_op.id,[])])[0]
+        print(f'{self.steps}: {action_mapped}')
+        raw_obs = self.env.step([action_mapped])[0]
 
-        return raw_obs
+        return raw_obs        # try:
+        # # except:
+        # #     print(f'{self.steps}: no operation (exception)')
+        # #     raw_obs = self.env.step([actions.FunctionCall(NO_OP,[])])[0]
+
+        # return raw_obs
+
 
 
     def move_up(self, idx):
+        idx = np.floor(idx)
+        try:
+            selected = self.marines[idx]
+            new_pos = [selected.x, selected.y-2]
+            return actions.RAW_FUNCTIONS.Move_pt("now", selected.tag, new_pos)
+            # return [MOVE_PT, [['now'], [selected.tag], [selected.x, selected.y-2]]]
+        except:
+            return actions.RAW_FUNCTIONS.no_op()
+            # return [NO_OP, []]
+
         # return actions.RAW_FUNCTIONS.Move_pt("now", selected.tag, (selected.x, selected.y-2))
-        return [actions.RAW_FUNCTIONS.no_op.id,[]]
+        # return [actions.RAW_FUNCTIONS.no_op.id,[]]
 
 
     def move_down(self, idx):
+        try:
+            selected = self.marines[idx]
+            new_pos = [selected.x, selected.y+2]
+            return actions.RAW_FUNCTIONS.Move_pt("now", selected.tag, new_pos)
+        except:
+            return actions.RAW_FUNCTIONS.no_op()
+            # return [NO_OP, []]
+
         # return actions.RAW_FUNCTIONS.Move_pt("now", selected.tag, (selected.x, selected.y+2))
-        return [actions.RAW_FUNCTIONS.no_op.id,[]]
+        # return [actions.RAW_FUNCTIONS.no_op.id,[]]
 
 
     def move_left(self, idx):
+        try:
+            selected = self.marines[idx]
+            new_pos = [selected.x-2, selected.y]
+            return actions.RAW_FUNCTIONS.Move_pt("now", selected.tag, new_pos)
+        except:
+            return actions.RAW_FUNCTIONS.no_op()
+            # return [NO_OP, []]
         # return actions.RAW_FUNCTIONS.Move_pt("now", selected.tag, (selected.x-2, selected.y))
-        return [actions.RAW_FUNCTIONS.no_op.id,[]]
+        # return [actions.RAW_FUNCTIONS.no_op.id,[]]
 
 
     def move_right(self, idx):
+        try:
+            selected = self.marines[idx]
+            new_pos = [selected.x+2, selected.y]
+            return actions.RAW_FUNCTIONS.Move_pt("now", selected.tag, new_pos)
+        except:
+            return actions.RAW_FUNCTIONS.no_op()
+            # return [NO_OP, []]
         # return actions.RAW_FUNCTIONS.Move_pt("now", selected.tag, (selected.x+2, selected.y))
-        return [actions.RAW_FUNCTIONS.no_op.id,[]]
+        # return [actions.RAW_FUNCTIONS.no_op.id, []]
 
 
-    def attack(self, attacker, enemy):
-        return [actions.RAW_FUNCTIONS.no_op.id,[]]
+    def attack(self, aidx, eidx):
+        try:
+            selected = self.marines[aidx]
+            if edix>3:
+                # attack zerglines
+                target = self.zerglines[eidx-4]
+            else:
+                target = self.banelings[eidx]
+            return actions.RAW_FUNCTIONS.Attack_unit("now", selected.tag, targeted.tag)
+        except:
+            return actions.RAW_FUNCTIONS.no_op()
+            # return [NO_OP, []]
+        # return [actions.RAW_FUNCTIONS.no_op.id,[]]
+
+
+    def init_env(self):
+        args = {**self.default_settings, **self.kwargs}
+        self.env =  sc2_env.SC2Env(**args)
 
 
     def reset(self):
         if self.env is None:
             self.init_env()
+
         if self.episodes > 0:
             logger.info(f"Episode {self.episodes} gained {self.episode_reward} reward with {self.steps} steps")
             logger.info(f"Average reward per episode: {self.total_reward/self.steps}")
@@ -168,6 +225,7 @@ class DZBEnv(gym.Env):
         self.episodes += 1
         self.steps = 0
         self.episode_reward = 0
+
         self.marines = []
         self.banelings = []
         self.zerglings = []
@@ -181,6 +239,7 @@ class DZBEnv(gym.Env):
         if self.episode > 0:
             logger.info(f"Episode {self.episodes} gained {self.episode_reward} reward with {self.steps} steps")
             logger.info(f"Average reward per episode: {self.total_reward/self.steps}")
+
         if self.env is not None:
             self.env.close()
         super().close()
